@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebGL Renderer</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body { background: #141416; overflow: hidden; font-family: system-ui, sans-serif; color: #ccc; }
+      canvas { display: block; width: 100vw; height: 100vh; }
+
+      input[type=file] { display: none; }
+
+      #ui {
+        position: fixed; top: 16px; left: 16px;
+        display: flex; flex-direction: column; gap: 10px; z-index: 10; width: 220px;
+      }
+
+      .row { display: flex; gap: 6px; }
+
+      .btn {
+        cursor: pointer;
+        background: rgba(255,255,255,0.08);
+        color: #ddd;
+        border: 1px solid rgba(255,255,255,0.15);
+        padding: 5px 12px;
+        border-radius: 6px;
+        font-size: 12px;
+        flex: 1;
+        text-align: center;
+        transition: background 0.15s;
+        white-space: nowrap;
+      }
+      .btn:hover { background: rgba(255,255,255,0.16); }
+
+      .panel {
+        background: rgba(0,0,0,0.55);
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 8px;
+        padding: 10px 12px;
+        display: flex; flex-direction: column; gap: 8px;
+        backdrop-filter: blur(8px);
+      }
+      .panel-title { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 0.06em; }
+
+      .ctrl { display: flex; align-items: center; gap: 6px; }
+      .ctrl label { font-size: 12px; width: 70px; flex-shrink: 0; }
+      .ctrl input[type=range] { flex: 1; height: 3px; accent-color: #7eb8f7; cursor: pointer; }
+      .ctrl span { font-size: 11px; color: #888; width: 32px; text-align: right; }
+
+      #status {
+        display: none;
+        background: rgba(0,0,0,0.7);
+        border: 1px solid rgba(255,200,60,0.3);
+        color: #ffc83c;
+        padding: 6px 10px;
+        border-radius: 6px;
+        font-size: 12px;
+      }
+
+      #hint {
+        position: fixed; inset: 0;
+        display: flex; flex-direction: column;
+        align-items: center; justify-content: center;
+        color: rgba(255,255,255,0.2);
+        font-size: 14px; pointer-events: none; gap: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="canvas"></canvas>
+
+    <!-- hidden file inputs -->
+    <input type="file" id="objInput" accept=".obj,.fbx" />
+    <input type="file" id="iblInput" accept=".exr" />
+
+    <div id="ui">
+      <div class="row">
+        <label for="objInput" class="btn">Open .obj / .fbx</label>
+        <label for="iblInput" class="btn">Open IBL .exr</label>
+      </div>
+
+      <div id="status"></div>
+
+      <div id="ibl-preview-wrap" style="display:none;">
+        <div id="ibl-preview-header" onclick="
+          const c=document.getElementById('ibl-preview');
+          const a=document.getElementById('ibl-arrow');
+          const open=c.style.display!=='none';
+          c.style.display=open?'none':'block';
+          a.textContent=open?'▶':'▼';
+        " style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;
+                 font-size:11px;color:#888;text-transform:uppercase;letter-spacing:0.06em;
+                 padding:4px 0;user-select:none;">
+          <span>IBL Preview</span><span id="ibl-arrow">▼</span>
+        </div>
+        <canvas id="ibl-preview" style="max-width:100%;height:10%;border-radius:6px;border:1px solid rgba(255,255,255,0.08);display:block;"></canvas>
+        <div id="ibl-res" style="font-size:10px;color:#666;text-align:right;margin-top:3px;"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Material</div>
+
+        <div class="ctrl">
+          <label>Roughness</label>
+          <input type="range" id="roughness" min="0.02" max="1" step="0.01" value="0.4"
+            oninput="document.getElementById('roughness-val').textContent=parseFloat(this.value).toFixed(2)">
+          <span id="roughness-val">0.40</span>
+        </div>
+
+        <div class="ctrl">
+          <label>Metallic</label>
+          <input type="range" id="metallic" min="0" max="1" step="0.01" value="0"
+            oninput="document.getElementById('metallic-val').textContent=parseFloat(this.value).toFixed(2)">
+          <span id="metallic-val">0.00</span>
+        </div>
+
+        <div class="ctrl">
+          <label>R</label>
+          <input type="range" id="r" min="0" max="1" step="0.01" value="0.8"
+            oninput="document.getElementById('r-val').textContent=parseFloat(this.value).toFixed(2)">
+          <span id="r-val">0.80</span>
+        </div>
+
+        <div class="ctrl">
+          <label>G</label>
+          <input type="range" id="g" min="0" max="1" step="0.01" value="0.8"
+            oninput="document.getElementById('g-val').textContent=parseFloat(this.value).toFixed(2)">
+          <span id="g-val">0.80</span>
+        </div>
+
+        <div class="ctrl">
+          <label>B</label>
+          <input type="range" id="b" min="0" max="1" step="0.01" value="0.8"
+            oninput="document.getElementById('b-val').textContent=parseFloat(this.value).toFixed(2)">
+          <span id="b-val">0.80</span>
+        </div>
+
+        <div class="ctrl">
+          <label>Exposure</label>
+          <input type="range" id="exposure" min="-15" max="15" step="0.1" value="0"
+            oninput="document.getElementById('exposure-val').textContent=(parseFloat(this.value)>=0?'+':'')+parseFloat(this.value).toFixed(1)">
+          <span id="exposure-val">+0.0</span>
+        </div>
+
+        <div class="ctrl">
+          <label>Tonemap</label>
+          <select id="tonemap" style="flex:1;background:rgba(255,255,255,0.06);color:#ddd;border:1px solid rgba(255,255,255,0.15);border-radius:4px;font-size:12px;padding:2px 4px;cursor:pointer;">
+            <option value="0">Linear</option>
+            <option value="1">Reinhard</option>
+            <option value="2" selected>ACES</option>
+            <option value="3">Uncharted 2</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div id="hint">
+      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+      </svg>
+      Load an .obj or .fbx mesh and an .exr IBL to begin<br/>
+      <span style="font-size:12px;opacity:0.5">Drag-and-drop supported · Orbit: drag · Zoom: scroll</span>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
