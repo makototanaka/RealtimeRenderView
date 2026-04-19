@@ -56,8 +56,8 @@ function parseBinaryFBX(buffer: ArrayBuffer): FBXNode {
           const enc     = dv.getUint32(off + 4, true);
           const compLen = dv.getUint32(off + 8, true);
           off += 12;
-          let raw = bytes.subarray(off, off + compLen);
-          if (enc === 1) raw = unzlibSync(raw);
+          const rawSlice = bytes.subarray(off, off + compLen);
+          const raw: Uint8Array<ArrayBuffer> = enc === 1 ? unzlibSync(rawSlice) as Uint8Array<ArrayBuffer> : rawSlice;
           off += compLen;
           const rawBuf = raw.buffer instanceof ArrayBuffer ? raw.buffer : raw.buffer.slice(0);
           const rdv = new DataView(rawBuf, raw.byteOffset, raw.byteLength);
