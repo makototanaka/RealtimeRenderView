@@ -59,7 +59,8 @@ function parseBinaryFBX(buffer: ArrayBuffer): FBXNode {
           let raw = bytes.subarray(off, off + compLen);
           if (enc === 1) raw = unzlibSync(raw);
           off += compLen;
-          const rdv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+          const rawBuf = raw.buffer instanceof ArrayBuffer ? raw.buffer : raw.buffer.slice(0);
+          const rdv = new DataView(rawBuf, raw.byteOffset, raw.byteLength);
           if (t === 'f') {
             const a = new Float32Array(arrLen);
             for (let j = 0; j < arrLen; j++) a[j] = rdv.getFloat32(j * 4, true);
@@ -171,7 +172,7 @@ export function parseFBX(buffer: ArrayBuffer): MeshData {
   }
 
   function emit(pv: number): number {
-    const raw = pvIdx[pv];
+    const raw = pvIdx![pv];
     const vi  = raw < 0 ? ~raw : raw;
     const [nx, ny, nz] = resolveNorm(pv, vi);
     const [u, v]       = resolveUV(pv, vi);
@@ -189,7 +190,7 @@ export function parseFBX(buffer: ArrayBuffer): MeshData {
     if (idx === undefined) {
       idx = outVerts.length / 8;
       vertMap.set(key, idx);
-      outVerts.push(rawPos[vi*3], rawPos[vi*3+1], rawPos[vi*3+2], nx, ny, nz, u, v);
+      outVerts.push(rawPos![vi*3], rawPos![vi*3+1], rawPos![vi*3+2], nx, ny, nz, u, v);
     }
     return idx;
   }
