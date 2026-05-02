@@ -1,11 +1,11 @@
-import type { MeshData } from '../loader/OBJLoader';
+import type { MeshData, SubMesh } from '../loader/OBJLoader';
 
 export class Mesh {
   readonly vao: WebGLVertexArrayObject;
   readonly indexCount: number;
+  readonly submeshes: SubMesh[];
   private vbo: WebGLBuffer;
   private ebo: WebGLBuffer;
-
   private gl: WebGL2RenderingContext;
 
   constructor(gl: WebGL2RenderingContext, data: MeshData, program: WebGLProgram) {
@@ -14,6 +14,7 @@ export class Mesh {
     this.vbo = gl.createBuffer()!;
     this.ebo = gl.createBuffer()!;
     this.indexCount = data.indices.length;
+    this.submeshes  = data.submeshes;
 
     gl.bindVertexArray(this.vao);
 
@@ -36,6 +37,12 @@ export class Mesh {
     if (loc < 0) return;
     this.gl.enableVertexAttribArray(loc);
     this.gl.vertexAttribPointer(loc, size, this.gl.FLOAT, false, stride, offset);
+  }
+
+  drawSubmesh(start: number, count: number): void {
+    this.gl.bindVertexArray(this.vao);
+    this.gl.drawElements(this.gl.TRIANGLES, count, this.gl.UNSIGNED_INT, start * 4);
+    this.gl.bindVertexArray(null);
   }
 
   draw(): void {

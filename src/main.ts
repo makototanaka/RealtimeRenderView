@@ -2,7 +2,7 @@ import { Renderer } from './renderer/Renderer';
 import { Shader } from './renderer/Shader';
 import { Mesh } from './renderer/Mesh';
 import { Camera, attachOrbitControls } from './renderer/Camera';
-import { parseOBJ } from './loader/OBJLoader';
+import { parseOBJ, type SubMesh } from './loader/OBJLoader';
 import { parseFBX } from './loader/FBXLoader';
 import { loadEXR } from './loader/EXRLoader';
 import { createIBL, type IBLMaps } from './renderer/IBL';
@@ -142,7 +142,73 @@ const skyboxShader = new Shader(gl, SKYBOX_VERT, SKYBOX_FRAG);
 let mesh:    Mesh | null    = null;
 let iblMaps: IBLMaps | null = null;
 
-// ── material controls ─────────────────────────────────────────────────────────
+// ── per-material params ───────────────────────────────────────────────────────
+interface MaterialParams {
+  r: number; g: number; b: number;
+  metallic: number; roughness: number;
+}
+
+let matParams: MaterialParams[] = [];
+
+function makeSlider(
+  label: string, min: number, max: number, step: number, defaultVal: number,
+  onchange: (v: number) => void
+): HTMLElement {
+  const row   = document.createElement('div');
+  row.className = 'ctrl';
+
+  const lbl   = document.createElement('label');
+  lbl.textContent = label;
+
+  const input = document.createElement('input');
+  input.type  = 'range';
+  input.min   = String(min);
+  input.max   = String(max);
+  input.step  = String(step);
+  input.value = String(defaultVal);
+
+  const val   = document.createElement('span');
+  val.textContent = defaultVal.toFixed(2);
+
+  input.addEventListener('input', () => {
+    const v = parseFloat(input.value);
+    val.textContent = v.toFixed(2);
+    onchange(v);
+  });
+
+  row.appendChild(lbl);
+  row.appendChild(input);
+  row.appendChild(val);
+  return row;
+}
+
+function buildMaterialUI(submeshes: SubMesh[]): void {
+  const container = document.getElementById('material-panels')!;
+  container.innerHTML = '';
+  matParams = submeshes.map(() => ({ r: 0.8, g: 0.8, b: 0.8, metallic: 0, roughness: 0.4 }));
+
+  submeshes.forEach((sm, i) => {
+    const p = matParams[i];
+
+    const panel = document.createElement('div');
+    panel.className = 'panel';
+
+    const title = document.createElement('div');
+    title.className = 'panel-title';
+    title.textContent = sm.name;
+    panel.appendChild(title);
+
+    panel.appendChild(makeSlider('Roughness', 0.02, 1,    0.01, 0.4, v => { p.roughness = v; }));
+    panel.appendChild(makeSlider('Metallic',  0,    1,    0.01, 0,   v => { p.metallic  = v; }));
+    panel.appendChild(makeSlider('R',         0,    1,    0.01, 0.8, v => { p.r         = v; }));
+    panel.appendChild(makeSlider('G',         0,    1,    0.01, 0.8, v => { p.g         = v; }));
+    panel.appendChild(makeSlider('B',         0,    1,    0.01, 0.8, v => { p.b         = v; }));
+
+    container.appendChild(panel);
+  });
+}
+
+// ── render controls ───────────────────────────────────────────────────────────
 function getFloat(id: string): number { return parseFloat((document.getElementById(id) as HTMLInputElement).value); }
 function getInt(id: string): number   { return parseInt((document.getElementById(id) as HTMLSelectElement).value, 10); }
 
@@ -201,11 +267,16 @@ function normalizeMesh(vertices: Float32Array): Float32Array {
 function loadOBJ(file: File): void {
   const reader = new FileReader();
   reader.onload = e => {
-    const data = parseOBJ(e.target!.result as string);
-    data.vertices = normalizeMesh(data.vertices);
-    mesh?.dispose();
-    mesh = new Mesh(gl, data, shader.program);
-    document.getElementById('hint')!.style.display = 'none';
+    try {
+      const data = parseOBJ(e.target!.result as string);
+      data.vertices = normalizeMesh(data.vertices);
+      mesh?.dispose();
+      mesh = new Mesh(gl, data, shader.program);
+      buildMaterialUI(mesh.submeshes);
+      document.getElementById('hint')!.style.display = 'none';
+    } catch (err) {
+      setStatus(`OBJ error: ${err}`);
+    }
   };
   reader.readAsText(file);
 }
@@ -218,6 +289,7 @@ function loadFBX(file: File): void {
       data.vertices = normalizeMesh(data.vertices);
       mesh?.dispose();
       mesh = new Mesh(gl, data, shader.program);
+      buildMaterialUI(mesh.submeshes);
       document.getElementById('hint')!.style.display = 'none';
     } catch (err) {
       setStatus(`FBX error: ${err}`);
@@ -236,6 +308,7 @@ function setStatus(msg: string): void {
 function loadIBL(file: File): void {
   setStatus('Loading EXR…');
   const reader = new FileReader();
+  reader.onerror = () => setStatus('EXR read error');
   reader.onload = e => {
     try {
       const img = loadEXR(e.target!.result as ArrayBuffer);
@@ -246,12 +319,15 @@ function loadIBL(file: File): void {
           iblMaps?.dispose();
           iblMaps = createIBL(gl, img.data, img.width, img.height);
           renderer.resize(); // restore viewport
+          document.getElementById('hint')!.style.display = 'none';
           setStatus('');
         } catch (err) {
+          console.error('IBL error:', err);
           setStatus(`IBL error: ${err}`);
         }
       }, 0);
     } catch (err) {
+      console.error('EXR error:', err);
       setStatus(`EXR error: ${err}`);
     }
   };
@@ -285,6 +361,7 @@ window.addEventListener('resize', () => {
 
 // ── render loop ───────────────────────────────────────────────────────────────
 function loop(): void {
+  try {
   renderer.clear(0.08, 0.08, 0.10);
 
   // ── skybox ──────────────────────────────────────────────────────────────────
@@ -320,10 +397,6 @@ function loop(): void {
     shader.setUniformMatrix4fv('u_mvp',   mvp);
     shader.setUniformMatrix4fv('u_model', camera.model);
     shader.setUniform3fv('u_eyePos', camera.eye);
-
-    shader.setUniform3f('u_albedo', getFloat('r'), getFloat('g'), getFloat('b'));
-    shader.setUniform1f('u_metallic',   getFloat('metallic'));
-    shader.setUniform1f('u_roughness',  getFloat('roughness'));
     shader.setUniform1f('u_exposure',   getFloat('exposure'));
     shader.setUniform1i('u_tonemap',    getInt('tonemap'));
 
@@ -331,9 +404,19 @@ function loop(): void {
     shader.setTextureCube('u_prefilterMap',  iblMaps.prefilterMap,  1);
     shader.setTexture2D  ('u_brdfLUT',       iblMaps.brdfLUT,       2);
 
-    mesh.draw();
+    for (let i = 0; i < mesh.submeshes.length; i++) {
+      const sm = mesh.submeshes[i];
+      const p  = matParams[i] ?? { r: 0.8, g: 0.8, b: 0.8, metallic: 0, roughness: 0.4 };
+      shader.setUniform3f('u_albedo',    p.r, p.g, p.b);
+      shader.setUniform1f('u_metallic',  p.metallic);
+      shader.setUniform1f('u_roughness', p.roughness);
+      mesh.drawSubmesh(sm.start, sm.count);
+    }
   }
 
+  } catch (err) {
+    console.error('Render loop error:', err);
+  }
   requestAnimationFrame(loop);
 }
 

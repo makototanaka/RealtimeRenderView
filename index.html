@@ -98,43 +98,10 @@
         <div id="ibl-res" style="font-size:10px;color:#666;text-align:right;margin-top:3px;"></div>
       </div>
 
+      <div id="material-panels" style="display:flex;flex-direction:column;gap:10px;max-height:60vh;overflow-y:auto;"></div>
+
       <div class="panel">
-        <div class="panel-title">Material</div>
-
-        <div class="ctrl">
-          <label>Roughness</label>
-          <input type="range" id="roughness" min="0.02" max="1" step="0.01" value="0.4"
-            oninput="document.getElementById('roughness-val').textContent=parseFloat(this.value).toFixed(2)">
-          <span id="roughness-val">0.40</span>
-        </div>
-
-        <div class="ctrl">
-          <label>Metallic</label>
-          <input type="range" id="metallic" min="0" max="1" step="0.01" value="0"
-            oninput="document.getElementById('metallic-val').textContent=parseFloat(this.value).toFixed(2)">
-          <span id="metallic-val">0.00</span>
-        </div>
-
-        <div class="ctrl">
-          <label>R</label>
-          <input type="range" id="r" min="0" max="1" step="0.01" value="0.8"
-            oninput="document.getElementById('r-val').textContent=parseFloat(this.value).toFixed(2)">
-          <span id="r-val">0.80</span>
-        </div>
-
-        <div class="ctrl">
-          <label>G</label>
-          <input type="range" id="g" min="0" max="1" step="0.01" value="0.8"
-            oninput="document.getElementById('g-val').textContent=parseFloat(this.value).toFixed(2)">
-          <span id="g-val">0.80</span>
-        </div>
-
-        <div class="ctrl">
-          <label>B</label>
-          <input type="range" id="b" min="0" max="1" step="0.01" value="0.8"
-            oninput="document.getElementById('b-val').textContent=parseFloat(this.value).toFixed(2)">
-          <span id="b-val">0.80</span>
-        </div>
+        <div class="panel-title">Render</div>
 
         <div class="ctrl">
           <label>Exposure</label>

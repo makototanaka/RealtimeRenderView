@@ -1,5 +1,5 @@
 import { unzlibSync } from 'fflate';
-import type { MeshData } from './OBJLoader';
+import type { MeshData, SubMesh } from './OBJLoader';
 
 interface FBXNode {
   name: string;
@@ -121,6 +121,12 @@ function asF64(v: unknown): Float64Array | null {
   return null;
 }
 
+function matNodeName(node: FBXNode, fallback: string): string {
+  const raw = (node.props[1] as string) ?? '';
+  const sep = raw.indexOf('::');
+  return sep >= 0 ? raw.slice(sep + 2) : (raw || fallback);
+}
+
 export function parseFBX(buffer: ArrayBuffer): MeshData {
   const root    = parseBinaryFBX(buffer);
   const objects = root.children.find(c => c.name === 'Objects');
@@ -150,8 +156,39 @@ export function parseFBX(buffer: ArrayBuffer): MeshData {
   const uvRef     = (chProp<string>(uvLayer, 'ReferenceInformationType') ?? 'IndexToDirect');
   const uvIdxArr  = uvRef === 'IndexToDirect' ? chProp<Int32Array>(uvLayer, 'UVIndex') ?? null : null;
 
+  // Material layer
+  const matLayer   = ch(geo, 'LayerElementMaterial');
+  const matMapping = (chProp<string>(matLayer, 'MappingInformationType') ?? 'AllSame');
+  const matIdxArr  = matMapping !== 'AllSame'
+    ? ch(matLayer!, 'Materials')?.props[0] as Int32Array | undefined
+    : undefined;
+
+  // Resolve material names via Connections
+  const geoId = geo.props[0] as number;
+  const connectionsNode = root.children.find(c => c.name === 'Connections');
+  let matNames: string[] = [];
+  if (connectionsNode) {
+    const geoConn = connectionsNode.children.find(
+      c => c.props[0] === 'OO' && c.props[1] === geoId
+    );
+    const modelId = geoConn ? (geoConn.props[2] as number) : undefined;
+    if (modelId !== undefined) {
+      for (const conn of connectionsNode.children) {
+        if (conn.props[0] !== 'OO' || conn.props[2] !== modelId) continue;
+        const id = conn.props[1] as number;
+        const matNode = objects.children.find(c => c.name === 'Material' && c.props[0] === id);
+        if (matNode) matNames.push(matNodeName(matNode, `Material ${matNames.length}`));
+      }
+    }
+  }
+  if (matNames.length === 0) {
+    matNames = objects.children
+      .filter(c => c.name === 'Material')
+      .map((m, i) => matNodeName(m, `Material ${i}`));
+  }
+
   const outVerts: number[] = [];
-  const outIdx:   number[] = [];
+  const matFaces = new Map<number, number[]>();
   const vertMap = new Map<string, number>();
 
   function resolveNorm(pv: number, vi: number): [number, number, number] {
@@ -176,7 +213,6 @@ export function parseFBX(buffer: ArrayBuffer): MeshData {
     const [nx, ny, nz] = resolveNorm(pv, vi);
     const [u, v]       = resolveUV(pv, vi);
 
-    // Key on resolved attribute indices so identical attributes share a vertex
     const ni = rawNormals
       ? (normMapping === 'ByPolygonVertex' ? (normRef === 'IndexToDirect' ? normIdxArr![pv] : pv) : (normRef === 'IndexToDirect' ? normIdxArr![vi] : vi))
       : -1;
@@ -194,31 +230,50 @@ export function parseFBX(buffer: ArrayBuffer): MeshData {
     return idx;
   }
 
+  let polyIndex = 0;
   let polyStart = 0;
   for (let i = 0; i < pvIdx.length; i++) {
     if (pvIdx[i] < 0) {
       const polyLen = i - polyStart + 1;
+      const mi = matMapping === 'AllSame' ? 0 : (matIdxArr?.[polyIndex] ?? 0);
+      if (!matFaces.has(mi)) matFaces.set(mi, []);
+      const faces = matFaces.get(mi)!;
       if (polyLen >= 3) {
         const i0 = emit(polyStart);
         for (let t = 1; t < polyLen - 1; t++) {
-          outIdx.push(i0, emit(polyStart + t), emit(polyStart + t + 1));
+          faces.push(i0, emit(polyStart + t), emit(polyStart + t + 1));
         }
       }
+      polyIndex++;
       polyStart = i + 1;
     }
   }
 
-  // Generate flat normals when the mesh has none
+  // Assemble index buffer grouped by material
+  const submeshes: SubMesh[] = [];
+  const allIndices: number[] = [];
+  for (const mi of [...matFaces.keys()].sort((a, b) => a - b)) {
+    const faces = matFaces.get(mi)!;
+    if (faces.length === 0) continue;
+    const name = matNames[mi] ?? `Material ${mi}`;
+    submeshes.push({ name, start: allIndices.length, count: faces.length });
+    for (let j = 0; j < faces.length; j++) allIndices.push(faces[j]);
+  }
+  if (submeshes.length === 0) {
+    submeshes.push({ name: 'Material', start: 0, count: allIndices.length });
+  }
+
+  // Flat normals when mesh has none
   if (!rawNormals) {
-    for (let i = 0; i < outIdx.length; i += 3) {
-      const a = outIdx[i]*8, b = outIdx[i+1]*8, c = outIdx[i+2]*8;
+    for (let i = 0; i < allIndices.length; i += 3) {
+      const a = allIndices[i]*8, b = allIndices[i+1]*8, c = allIndices[i+2]*8;
       const ax = outVerts[b]-outVerts[a],   ay = outVerts[b+1]-outVerts[a+1], az = outVerts[b+2]-outVerts[a+2];
       const bx = outVerts[c]-outVerts[a],   by = outVerts[c+1]-outVerts[a+1], bz = outVerts[c+2]-outVerts[a+2];
-      const cx = ay*bz - az*by, cy = az*bx - ax*bz, cz = ax*by - ay*bx;
-      const len = Math.sqrt(cx*cx + cy*cy + cz*cz) || 1;
-      for (const ii of [a, b, c]) { outVerts[ii+3]=cx/len; outVerts[ii+4]=cy/len; outVerts[ii+5]=cz/len; }
+      const nx = ay*bz - az*by, ny = az*bx - ax*bz, nz = ax*by - ay*bx;
+      const len = Math.sqrt(nx*nx + ny*ny + nz*nz) || 1;
+      for (const ii of [a, b, c]) { outVerts[ii+3]=nx/len; outVerts[ii+4]=ny/len; outVerts[ii+5]=nz/len; }
     }
   }
 
-  return { vertices: new Float32Array(outVerts), indices: new Uint32Array(outIdx) };
+  return { vertices: new Float32Array(outVerts), indices: new Uint32Array(allIndices), submeshes };
 }
