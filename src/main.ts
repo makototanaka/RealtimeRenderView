@@ -6,7 +6,8 @@ import { parseOBJ, type SubMesh } from './loader/OBJLoader';
 import { parseFBX } from './loader/FBXLoader';
 import { loadEXR } from './loader/EXRLoader';
 import { createIBL, type IBLMaps } from './renderer/IBL';
-import { multiply } from './math/mat4';
+import { multiply, perspective, lookAt } from './math/mat4';
+import { generateSphere, generateMacbethChartMesh, MACBETH_LINEAR } from './renderer/RefObjects';
 
 // ── Skybox shaders ────────────────────────────────────────────────────────────
 const SKYBOX_VERT = `#version 300 es
@@ -43,12 +44,15 @@ uniform float u_fovTan;
 uniform float u_aspect;
 uniform samplerCube u_envMap;
 uniform float u_exposure;
+uniform float u_iblRotation;
 ${TONEMAP_GLSL}
 out vec4 outColor;
 void main() {
   vec3 viewDir  = vec3(v_ndc.x * u_aspect * u_fovTan, v_ndc.y * u_fovTan, -1.0);
-  vec3 worldDir = normalize(u_invViewRot * viewDir);
-  vec3 color    = textureLod(u_envMap, worldDir, 1.5).rgb * pow(2.0, u_exposure);
+  vec3 d = normalize(u_invViewRot * viewDir);
+  float c = cos(u_iblRotation), s = sin(u_iblRotation);
+  vec3 worldDir = vec3(c*d.x + s*d.z, d.y, -s*d.x + c*d.z);
+  vec3 color = textureLod(u_envMap, worldDir, 1.5).rgb * pow(2.0, u_exposure);
   outColor = vec4(applyTonemap(color), 1.0);
 }`;
 
@@ -84,6 +88,7 @@ uniform float u_exposure;
 uniform samplerCube u_irradianceMap;
 uniform samplerCube u_prefilterMap;
 uniform sampler2D   u_brdfLUT;
+uniform float u_iblRotation;
 
 ${TONEMAP_GLSL}
 
@@ -104,13 +109,18 @@ void main() {
   vec3  R     = reflect(-V, N);
   float NdotV = max(dot(N, V), 0.0);
 
+  // Rotate IBL sample directions around Y axis
+  float c = cos(u_iblRotation), s = sin(u_iblRotation);
+  vec3 Nenv = vec3(c*N.x + s*N.z, N.y, -s*N.x + c*N.z);
+  vec3 Renv = vec3(c*R.x + s*R.z, R.y, -s*R.x + c*R.z);
+
   vec3 F0 = mix(vec3(0.04), u_albedo, u_metallic);
   vec3 kS = fresnelSchlickRoughness(NdotV, F0, u_roughness);
   vec3 kD = (1.0 - kS) * (1.0 - u_metallic);
 
-  vec3 irradiance       = texture(u_irradianceMap, N).rgb;
+  vec3 irradiance       = texture(u_irradianceMap, Nenv).rgb;
   vec3 diffuse          = irradiance * u_albedo;
-  vec3 prefilteredColor = textureLod(u_prefilterMap, R, u_roughness * MAX_LOD).rgb;
+  vec3 prefilteredColor = textureLod(u_prefilterMap, Renv, u_roughness * MAX_LOD).rgb;
   vec2 brdf             = texture(u_brdfLUT, vec2(NdotV, u_roughness)).rg;
   vec3 specular         = prefilteredColor * (kS * brdf.x + brdf.y);
 
@@ -138,6 +148,95 @@ gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 gl.bindVertexArray(null);
 
 const skyboxShader = new Shader(gl, SKYBOX_VERT, SKYBOX_FRAG);
+
+// ── VFX reference overlay objects ─────────────────────────────────────────────
+const chromeBallMesh = new Mesh(gl, generateSphere(32, 32), shader.program);
+const greyBallMesh   = new Mesh(gl, generateSphere(32, 32), shader.program);
+const macbethMesh    = new Mesh(gl, generateMacbethChartMesh(2.5, 1.667, 0.04), shader.program);
+
+const OV_W = 360, OV_H = 130; // CSS pixels
+const REF_EYE: [number, number, number] = [0, 0, 5];
+
+// Combined scale-then-translate matrix (T*S, uniform scale)
+function mat4TRS(tx: number, ty: number, tz: number, s: number): Float32Array {
+  return new Float32Array([s,0,0,0, 0,s,0,0, 0,0,s,0, tx,ty,tz,1]);
+}
+
+function drawRefOverlay(): void {
+  if (!(document.getElementById('ref-visible') as HTMLInputElement).checked) return;
+  if (!iblMaps) return;
+
+  const dpr    = window.devicePixelRatio || 1;
+  const margin = Math.round(16 * dpr);
+  const ow     = Math.round(OV_W * dpr);
+  const oh     = Math.round(OV_H * dpr);
+  const ox     = canvas.width  - ow - margin;
+  const oy     = canvas.height - oh - margin; // top in WebGL coords
+
+  gl.enable(gl.SCISSOR_TEST);
+  gl.scissor(ox, oy, ow, oh);
+  gl.clearColor(0.06, 0.06, 0.08, 1.0);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.viewport(ox, oy, ow, oh);
+  gl.enable(gl.DEPTH_TEST);
+
+  const refVP = multiply(
+    perspective(Math.PI / 6, OV_W / OV_H, 0.1, 100),
+    lookAt(REF_EYE, [0, 0, 0], [0, 1, 0]),
+  );
+  const S = 0.9;
+
+  // All three objects use PBR + IBL
+  shader.use();
+  shader.setUniform1f('u_exposure',    getFloat('exposure'));
+  shader.setUniform1i('u_tonemap',     getInt('tonemap'));
+  shader.setUniform1f('u_iblRotation', getFloat('iblRotation') * (Math.PI / 180));
+  shader.setTextureCube('u_irradianceMap', iblMaps.irradianceMap, 0);
+  shader.setTextureCube('u_prefilterMap',  iblMaps.prefilterMap,  1);
+  shader.setTexture2D  ('u_brdfLUT',       iblMaps.brdfLUT,       2);
+  shader.setUniform3fv ('u_eyePos',        REF_EYE);
+
+  // Chrome ball: metallic mirror
+  {
+    const model = mat4TRS(-2.2, 0, 0, S);
+    shader.setUniformMatrix4fv('u_mvp',   multiply(refVP, model));
+    shader.setUniformMatrix4fv('u_model', model);
+    shader.setUniform3f('u_albedo',    1, 1, 1);
+    shader.setUniform1f('u_metallic',  1.0);
+    shader.setUniform1f('u_roughness', 0.0);
+    chromeBallMesh.draw();
+  }
+
+  // Mid-grey ball: 18% diffuse reference
+  {
+    const model = mat4TRS(-0.1, 0, 0, S);
+    shader.setUniformMatrix4fv('u_mvp',   multiply(refVP, model));
+    shader.setUniformMatrix4fv('u_model', model);
+    shader.setUniform3f('u_albedo',    0.18, 0.18, 0.18);
+    shader.setUniform1f('u_metallic',  0.0);
+    shader.setUniform1f('u_roughness', 1.0);
+    greyBallMesh.draw();
+  }
+
+  // Macbeth chart: 24 patches, each with linearized albedo, fully diffuse
+  {
+    const model = mat4TRS(2.2, 0, 0, 1);
+    const mvp   = multiply(refVP, model);
+    shader.setUniformMatrix4fv('u_mvp',   mvp);
+    shader.setUniformMatrix4fv('u_model', model);
+    shader.setUniform1f('u_metallic',  0.0);
+    shader.setUniform1f('u_roughness', 1.0);
+    for (let i = 0; i < macbethMesh.submeshes.length; i++) {
+      const [r, g, b] = MACBETH_LINEAR[i];
+      shader.setUniform3f('u_albedo', r, g, b);
+      const sm = macbethMesh.submeshes[i];
+      macbethMesh.drawSubmesh(sm.start, sm.count);
+    }
+  }
+
+  gl.disable(gl.SCISSOR_TEST);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+}
 
 let mesh:    Mesh | null    = null;
 let iblMaps: IBLMaps | null = null;
@@ -380,8 +479,9 @@ function loop(): void {
     skyboxShader.setUniformMatrix3fv('u_invViewRot', invViewRot);
     skyboxShader.setUniform1f('u_fovTan',  Math.tan(camera.fovY / 2));
     skyboxShader.setUniform1f('u_aspect',  camera.aspect);
-    skyboxShader.setUniform1f('u_exposure', getFloat('exposure'));
-    skyboxShader.setUniform1i('u_tonemap',  getInt('tonemap'));
+    skyboxShader.setUniform1f('u_exposure',    getFloat('exposure'));
+    skyboxShader.setUniform1i('u_tonemap',     getInt('tonemap'));
+    skyboxShader.setUniform1f('u_iblRotation', getFloat('iblRotation') * (Math.PI / 180));
     skyboxShader.setTextureCube('u_envMap', iblMaps.prefilterMap, 0);
 
     gl.bindVertexArray(fsTriVAO);
@@ -397,8 +497,9 @@ function loop(): void {
     shader.setUniformMatrix4fv('u_mvp',   mvp);
     shader.setUniformMatrix4fv('u_model', camera.model);
     shader.setUniform3fv('u_eyePos', camera.eye);
-    shader.setUniform1f('u_exposure',   getFloat('exposure'));
-    shader.setUniform1i('u_tonemap',    getInt('tonemap'));
+    shader.setUniform1f('u_exposure',    getFloat('exposure'));
+    shader.setUniform1i('u_tonemap',     getInt('tonemap'));
+    shader.setUniform1f('u_iblRotation', getFloat('iblRotation') * (Math.PI / 180));
 
     shader.setTextureCube('u_irradianceMap', iblMaps.irradianceMap, 0);
     shader.setTextureCube('u_prefilterMap',  iblMaps.prefilterMap,  1);
@@ -413,6 +514,8 @@ function loop(): void {
       mesh.drawSubmesh(sm.start, sm.count);
     }
   }
+
+  drawRefOverlay();
 
   } catch (err) {
     console.error('Render loop error:', err);
